@@ -49,12 +49,16 @@ async function getWinGoResults() {
     Date.now();
 
   const response = await fetch(url, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "Mozilla/5.0"
-    }
-  });
+  method: "GET",
+  headers: {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.sikkimgg.bet/",
+    "Origin": "https://www.sikkimgg.bet",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  }
+});
 
   if (!response.ok) {
     throw new Error(
