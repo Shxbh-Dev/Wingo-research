@@ -5,28 +5,18 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 
 if (!SUPABASE_URL) {
-  throw new Error("SUPABASE_URL is missing.");
+  throw new Error("SUPABASE_URL is missing");
 }
 
 if (!SUPABASE_SECRET_KEY) {
-  throw new Error("SUPABASE_SECRET_KEY is missing.");
+  throw new Error("SUPABASE_SECRET_KEY is missing");
 }
 
-function normalize(rows) {
-  return rows
-    .map((x) => ({
-      issue: String(
-        x.issueNumber ??
-        x.issue ??
-        x.period ??
-        ""
-      ).trim(),
-
-      result: Number(
-        x.number ??
-        x.result ??
-        x.openNumber
-      )
+function normalize(list) {
+  return list
+    .map((item) => ({
+      issue: String(item?.issueNumber ?? "").trim(),
+      result: Number(item?.number)
     }))
     .filter(
       (x) =>
@@ -37,15 +27,14 @@ function normalize(rows) {
     );
 }
 
-function getSide(result) {
-  return result >= 5 ? "BIG" : "SMALL";
+function getSide(number) {
+  return number >= 5 ? "BIG" : "SMALL";
 }
 
 async function getWinGoResults() {
   const url =
     WIN_GO_API +
-    (WIN_GO_API.includes("?") ? "&" : "?") +
-    "pageNo=1&pageSize=50&_=" +
+    "?_=" +
     Date.now();
 
   const response = await fetch(url, {
@@ -57,31 +46,30 @@ async function getWinGoResults() {
     }
   });
 
-  console.log("WinGo HTTP status:", response.status);
-  console.log(
-    "WinGo content-type:",
-    response.headers.get("content-type")
-  );
-
   const body = await response.text();
 
-  console.log(
-    "WinGo response preview:",
-    body.substring(0, 1000)
-  );
-
   if (!response.ok) {
+    console.error("WinGo HTTP status:", response.status);
+    console.error("WinGo response:", body.slice(0, 1000));
+
     throw new Error(
       `WinGo API returned HTTP ${response.status}`
     );
   }
 
+  let json;
+
   try {
-    return JSON.parse(body);
+    json = JSON.parse(body);
   } catch {
-    throw new Error("WinGo returned non-JSON data.");
+    console.error("Invalid JSON response:");
+    console.error(body.slice(0, 1000));
+    throw new Error("WinGo API did not return JSON");
   }
+
+  return json;
 }
+
 async function saveToSupabase(records) {
   const url =
     `${SUPABASE_URL}/rest/v1/wingo_results` +
@@ -89,115 +77,111 @@ async function saveToSupabase(records) {
 
   const response = await fetch(url, {
     method: "POST",
-
     headers: {
-      apikey: SUPABASE_SECRET_KEY,
-      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-
+      "apikey": SUPABASE_SECRET_KEY,
+      "Authorization": `Bearer ${SUPABASE_SECRET_KEY}`,
       "Content-Type": "application/json",
-
-      Prefer: "resolution=merge-duplicates,return=minimal"
+      "Prefer": "resolution=merge-duplicates,return=minimal"
     },
-
     body: JSON.stringify(records)
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
+    const error = await response.text();
 
     throw new Error(
-      `Supabase HTTP ${response.status}: ${errorText}`
+      `Supabase HTTP ${response.status}: ${error}`
     );
   }
-}
-
-async function getDatabaseCount() {
-  const url =
-    `${SUPABASE_URL}/rest/v1/wingo_results` +
-    "?select=id";
-
-  const response = await fetch(url, {
-    method: "HEAD",
-
-    headers: {
-      apikey: SUPABASE_SECRET_KEY,
-      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
-
-      Prefer: "count=exact"
-    }
-  });
-
-  if (!response.ok) {
-    return null;
-  }
-
-  const range = response.headers.get("content-range");
-
-  if (!range) {
-    return null;
-  }
-
-  const total = range.split("/")[1];
-
-  return total === "*" ? null : Number(total);
 }
 
 async function main() {
-  console.log("=================================");
-  console.log("WinGo Collector Starting");
-  console.log("=================================");
+  console.log("================================");
+  console.log("WIN GO 24/7 COLLECTOR");
+  console.log("================================");
+
+  console.log("API:");
+  console.log(WIN_GO_API);
 
   const json = await getWinGoResults();
 
-  const raw =
-    json?.data?.list ??
-    json?.data ??
-    json?.list ??
-    [];
+  /*
+   * EXACT structure used by NEW LOGIC AI.html:
+   *
+   * data.data.list
+   *
+   * item.issueNumber
+   * item.number
+   */
+  const list =
+    json?.data?.list;
 
-  if (!Array.isArray(raw)) {
+  if (!Array.isArray(list)) {
+    console.error(
+      "Unexpected API structure:"
+    );
+
+    console.error(
+      JSON.stringify(json).slice(0, 2000)
+    );
+
     throw new Error(
-      "Unexpected WinGo API response format."
+      "data.data.list was not found"
     );
   }
 
-  const results = normalize(raw);
-
   console.log(
-    `Valid results received: ${results.length}`
+    `API records received: ${list.length}`
   );
+
+  const results = normalize(list);
 
   if (!results.length) {
     throw new Error(
-      "WinGo API returned zero valid results."
+      "No valid WinGo records found"
     );
   }
 
+  console.log(
+    `Valid records: ${results.length}`
+  );
+
+  /*
+   * Convert to Supabase format.
+   */
   const records = results.map((x) => ({
     issue: x.issue,
     result: x.result,
     side: getSide(x.result)
   }));
 
-  console.log(
-    `Sending ${records.length} records to Supabase...`
-  );
-
+  /*
+   * Send the complete returned history.
+   *
+   * Because issue is UNIQUE and on_conflict=issue,
+   * old records are updated and new periods are inserted.
+   */
   await saveToSupabase(records);
 
-  console.log("Supabase save successful.");
+  console.log(
+    `Saved ${records.length} records to Supabase`
+  );
 
-  const count = await getDatabaseCount();
+  console.log(
+    `Latest issue: ${results[0].issue}`
+  );
 
-  if (count !== null) {
-    console.log(
-      `Total records currently stored: ${count}`
-    );
-  }
+  console.log(
+    `Latest number: ${results[0].result}`
+  );
 
-  console.log("=================================");
-  console.log("Collector completed successfully");
-  console.log("=================================");
+  console.log(
+    `Latest side: ${getSide(results[0].result)}`
+  );
+
+  console.log("================================");
+  console.log("COLLECTION SUCCESS");
+  console.log("================================");
 }
 
 main().catch((error) => {
@@ -205,5 +189,6 @@ main().catch((error) => {
   console.error("❌ COLLECTOR FAILED");
   console.error(error);
   console.error("");
+
   process.exit(1);
 });
