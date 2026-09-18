@@ -1,27 +1,16 @@
-import { createClient } from "@supabase/supabase-js";
-
-const API =
+const WIN_GO_API =
   "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY;
 
-if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) {
-  throw new Error(
-    "Missing SUPABASE_URL or SUPABASE_SECRET_KEY environment variables."
-  );
+if (!SUPABASE_URL) {
+  throw new Error("SUPABASE_URL is missing.");
 }
 
-const supabase = createClient(
-  SUPABASE_URL,
-  SUPABASE_SECRET_KEY,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
-    }
-  }
-);
+if (!SUPABASE_SECRET_KEY) {
+  throw new Error("SUPABASE_SECRET_KEY is missing.");
+}
 
 function normalize(rows) {
   return rows
@@ -52,32 +41,96 @@ function getSide(result) {
   return result >= 5 ? "BIG" : "SMALL";
 }
 
-async function fetchWinGo() {
+async function getWinGoResults() {
   const url =
-    API +
-    (API.includes("?") ? "&" : "?") +
+    WIN_GO_API +
+    (WIN_GO_API.includes("?") ? "&" : "?") +
     "_=" +
     Date.now();
 
   const response = await fetch(url, {
     method: "GET",
-    cache: "no-store",
     headers: {
-      Accept: "application/json"
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0"
     }
   });
 
   if (!response.ok) {
-    throw new Error(`WinGo API HTTP ${response.status}`);
+    throw new Error(
+      `WinGo API returned HTTP ${response.status}`
+    );
   }
 
-  return response.json();
+  return await response.json();
+}
+
+async function saveToSupabase(records) {
+  const url =
+    `${SUPABASE_URL}/rest/v1/wingo_results` +
+    "?on_conflict=issue";
+
+  const response = await fetch(url, {
+    method: "POST",
+
+    headers: {
+      apikey: SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
+
+      "Content-Type": "application/json",
+
+      Prefer: "resolution=merge-duplicates,return=minimal"
+    },
+
+    body: JSON.stringify(records)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+
+    throw new Error(
+      `Supabase HTTP ${response.status}: ${errorText}`
+    );
+  }
+}
+
+async function getDatabaseCount() {
+  const url =
+    `${SUPABASE_URL}/rest/v1/wingo_results` +
+    "?select=id";
+
+  const response = await fetch(url, {
+    method: "HEAD",
+
+    headers: {
+      apikey: SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${SUPABASE_SECRET_KEY}`,
+
+      Prefer: "count=exact"
+    }
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const range = response.headers.get("content-range");
+
+  if (!range) {
+    return null;
+  }
+
+  const total = range.split("/")[1];
+
+  return total === "*" ? null : Number(total);
 }
 
 async function main() {
-  console.log("Starting WinGo collector...");
+  console.log("=================================");
+  console.log("WinGo Collector Starting");
+  console.log("=================================");
 
-  const json = await fetchWinGo();
+  const json = await getWinGoResults();
 
   const raw =
     json?.data?.list ??
@@ -86,16 +139,22 @@ async function main() {
     [];
 
   if (!Array.isArray(raw)) {
-    throw new Error("WinGo API returned an unexpected data format.");
+    throw new Error(
+      "Unexpected WinGo API response format."
+    );
   }
 
   const results = normalize(raw);
 
-  if (!results.length) {
-    throw new Error("No valid WinGo results found.");
-  }
+  console.log(
+    `Valid results received: ${results.length}`
+  );
 
-  console.log(`API returned ${results.length} valid results.`);
+  if (!results.length) {
+    throw new Error(
+      "WinGo API returned zero valid results."
+    );
+  }
 
   const records = results.map((x) => ({
     issue: x.issue,
@@ -103,55 +162,31 @@ async function main() {
     side: getSide(x.result)
   }));
 
-  /*
-   * Upsert means:
-   * - new periods are inserted
-   * - already stored periods are ignored/updated
-   * - duplicate periods are not created
-   */
-  const { data, error } = await supabase
-    .from("wingo_results")
-    .upsert(records, {
-      onConflict: "issue"
-    })
-    .select();
-
-  if (error) {
-    throw new Error(
-      `Supabase error: ${error.message}`
-    );
-  }
-
   console.log(
-    `Successfully stored ${data?.length ?? 0} records.`
+    `Sending ${records.length} records to Supabase...`
   );
 
-  /*
-   * Verify database count.
-   */
-  const { count, error: countError } = await supabase
-    .from("wingo_results")
-    .select("*", {
-      count: "exact",
-      head: true
-    });
+  await saveToSupabase(records);
 
-  if (countError) {
-    console.warn(
-      "Could not read database count:",
-      countError.message
-    );
-  } else {
+  console.log("Supabase save successful.");
+
+  const count = await getDatabaseCount();
+
+  if (count !== null) {
     console.log(
-      `Total stored WinGo results: ${count}`
+      `Total records currently stored: ${count}`
     );
   }
 
-  console.log("Collector finished successfully.");
+  console.log("=================================");
+  console.log("Collector completed successfully");
+  console.log("=================================");
 }
 
 main().catch((error) => {
-  console.error("COLLECTOR FAILED:");
+  console.error("");
+  console.error("❌ COLLECTOR FAILED");
   console.error(error);
+  console.error("");
   process.exit(1);
 });
