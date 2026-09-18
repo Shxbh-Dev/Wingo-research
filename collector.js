@@ -45,20 +45,30 @@ async function getWinGoResults() {
   const url =
     WIN_GO_API +
     (WIN_GO_API.includes("?") ? "&" : "?") +
-    "_=" +
+    "pageNo=1&pageSize=50&_=" +
     Date.now();
 
   const response = await fetch(url, {
-  method: "GET",
-  headers: {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.sikkimgg.bet/",
-    "Origin": "https://www.sikkimgg.bet",
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
-  }
-});
+    method: "GET",
+    headers: {
+      "Accept": "application/json, text/plain, */*",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36"
+    }
+  });
+
+  console.log("WinGo HTTP status:", response.status);
+  console.log(
+    "WinGo content-type:",
+    response.headers.get("content-type")
+  );
+
+  const body = await response.text();
+
+  console.log(
+    "WinGo response preview:",
+    body.substring(0, 1000)
+  );
 
   if (!response.ok) {
     throw new Error(
@@ -66,9 +76,12 @@ async function getWinGoResults() {
     );
   }
 
-  return await response.json();
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new Error("WinGo returned non-JSON data.");
+  }
 }
-
 async function saveToSupabase(records) {
   const url =
     `${SUPABASE_URL}/rest/v1/wingo_results` +
